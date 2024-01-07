@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>WT</title>
+        <script>
+            var CustomCommand_history = [];
+            var CustomCommand_history_index = -1;
+            var Monitor_output = [];
+            var http_communication_locked = false;
+            var http_cmd_list = [];
+            var processing_cmd = false;
+            var xmlhttpupload;
+            var max_cmd = 20;
+            function SendCustomCommand() {
+                var cmd = document.getElementById("custom_cmd_txt").value;
+                var url = "http://esp3d/command?commandText=";
+                cmd = cmd.trim();
+                if (cmd.trim().length == 0) return;
+                CustomCommand_history.push(cmd);
+                CustomCommand_history.slice(-40);
+                CustomCommand_history_index = CustomCommand_history.length;
+                document.getElementById("custom_cmd_txt").value = "";
+                cmd = encodeURI(cmd);
+                //because # is not encoded
+                cmd = cmd.replace("#", "%23");
+                SendGetHttp(
+                    url + cmd,
+                    SendCustomCommandSuccess,
+                    SendCustomCommandFailed
+                );
+            }
+            function SendCustomCommandSuccess(response) {
+                if (response[response.length - 1] != "\n")
+                    Monitor_output_Update(response + "\n");
+                else {
+                    Monitor_output_Update(response);
+                }
+                var tcmdres = response.split("\n");
+                for (var il = 0; il < tcmdres.length; il++) {
+                    process_socket_response(tcmdres[il]);
+                }
+            }
+
+            function SendCustomCommandFailed(error_code, response) {
+                if (error_code == 0) {
+                    Monitor_output_Update(
+                        translate_text_item("Connection error") + "\n"
+                    );
+                } else {
+                    Monitor_output_Update(
+                        translate_text_item("Error : ") +
+                            error_code +
+                            " :" +
+                            decode_entitie(response) +
+                            "\n"
+                    );
+                }
+                console.log(
+                    "cmd Error " + error_code + " :" + decode_entitie(response)
+                );
+            }
+
+            function SendGetHttp(url, result_fn, error_fn, id, max_id) {
+                if (http_cmd_list.length > max_cmd && max_cmd != -1) {
+                    console.log("adding rejected");
+                    error_fn();
+                    return;
+                }
+                var cmd_id = 0;
+                var cmd_max_id = 1;
+                //console.log("ID = " + id);
+                //console.log("Max ID = " + max_id);
+                //console.log("+++ " + url);
+                if (typeof id != "undefined") {
+                    cmd_id = id;
+                    if (typeof max_id != "undefined") cmd_max_id = max_id;
+                    //else console.log("No Max ID defined");
+                    for (p = 0; p < http_cmd_list.length; p++) {
+                        //console.log("compare " + (max_id - cmd_max_id));
+                        if (http_cmd_list[p].id == cmd_id) {
+                            cmd_max_id--;
+                            //console.log("found " + http_cmd_list[p].id + " and " + cmd_id);
+                        }
+                        if (cmd_max_id <= 0) {
+                            //console.log("Limit reched for " + id);
+                            return;
+                        }
+                    }
+                } //else console.log("No ID defined");
+                //console.log("adding " + url);
+                var cmd = {
+                    cmd: url,
+                    type: "GET",
+                    isupload: false,
+                    resultfn: result_fn,
+                    errorfn: error_fn,
+                    id: cmd_id,
+                };
+                http_cmd_list.push(cmd);
+                //console.log("Now " + http_cmd_list.length);
+                process_cmd();
+            }
+
+            function process_cmd() {
+                if (http_cmd_list.length > 0 && !processing_cmd) {
+                    //console.log("Processing 1/" + http_cmd_list.length);
+                    //console.log("Processing " + http_cmd_list[0].cmd);
+                    if (http_cmd_list[0].type == "GET") {
+                        processing_cmd = true;
+                        ProcessGetHttp(
+                            http_cmd_list[0].cmd,
+                            http_resultfn,
+                            http_errorfn
+                        );
+                    } else if (http_cmd_list[0].type == "POST") {
+                        processing_cmd = true;
+                        if (!http_cmd_list[0].isupload) {
+                            ProcessPostHttp(
+                                http_cmd_list[0].cmd,
+                                http_cmd_list[0].data,
+                                http_resultfn,
+                                http_errorfn
+                            );
+                        } else {
+                            //console.log("Uploading");
+                            ProcessFileHttp(
+                                http_cmd_list[0].cmd,
+                                http_cmd_list[0].data,
+                                http_cmd_list[0].progressfn,
+                                http_resultfn,
+                                http_errorfn
+                            );
+                        }
+                    } else if (http_cmd_list[0].type == "CMD") {
+                        processing_cmd = true;
+                        var fn = http_cmd_list[0].cmd;
+                        fn();
+                        http_cmd_list.shift();
+                        processing_cmd = false;
+                        process_cmd();
+                    }
+                } //else if (http_cmd_list.length > 0)console.log("processing");
+            }
+
+            function ProcessGetHttp(url, resultfn, errorfn) {
+                if (http_communication_locked) {
+                    errorfn(503, translate_text_item("Communication locked!"));
+                    console.log("locked");
+                    return;
+                }
+                var xmlhttp = new XMLHttpRequest();
+                xmlhttp.onreadystatechange = function () {
+                    if (xmlhttp.readyState == 4) {
+                        if (xmlhttp.status == 200) {
+                            //console.log("*** " + url + " done");
+                            if (
+                                typeof resultfn != "undefined" &&
+                                resultfn != null
+                            )
+                                resultfn(xmlhttp.responseText);
+                        } else {
+                            if (xmlhttp.status == 401)
+                                GetIdentificationStatus();
+                            if (
+                                typeof errorfn != "undefined" &&
+                                errorfn != null
+                            )
+                                errorfn(xmlhttp.status, xmlhttp.responseText);
+                        }
+                    }
+                };
+                if (url.indexOf("?") != -1) url += "&PAGEID=" + page_id;
+                //console.log("GET:" + url);
+                xmlhttp.open("GET", url, true);
+                xmlhttp.send();
+            }
+            function ProcessPostHttp(url, postdata, resultfn, errorfn) {
+                if (http_communication_locked) {
+                    errorfn(503, translate_text_item("Communication locked!"));
+                    return;
+                }
+                var xmlhttp = new XMLHttpRequest();
+                xmlhttp.onreadystatechange = function () {
+                    if (xmlhttp.readyState == 4) {
+                        if (xmlhttp.status == 200) {
+                            if (
+                                typeof resultfn != "undefined" &&
+                                resultfn != null
+                            )
+                                resultfn(xmlhttp.responseText);
+                        } else {
+                            if (xmlhttp.status == 401)
+                                GetIdentificationStatus();
+                            if (
+                                typeof errorfn != "undefined" &&
+                                errorfn != null
+                            )
+                                errorfn(xmlhttp.status, xmlhttp.responseText);
+                        }
+                    }
+                };
+                //console.log(url);
+                xmlhttp.open("POST", url, true);
+                xmlhttp.send(postdata);
+            }
+
+            function SendPostHttp(
+                url,
+                postdata,
+                result_fn,
+                error_fn,
+                id,
+                max_id
+            ) {
+                if (http_cmd_list.length > max_cmd && max_cmd != -1) {
+                    //console.log("adding rejected");
+                    error_fn();
+                    return;
+                }
+                var cmd_id = 0;
+                var cmd_max_id = 1;
+                if (typeof id != "undefined") {
+                    cmd_id = id;
+                    if (typeof max_id != "undefined") cmd_max_id = max_id;
+                    for (p = 0; p < http_cmd_list.length; p++) {
+                        if (http_cmd_list[p].id == cmd_id) cmd_max_id--;
+                        if (cmd_max_id <= 0) return;
+                    }
+                }
+
+                //console.log("adding " + url);
+                var cmd = {
+                    cmd: url,
+                    type: "POST",
+                    isupload: false,
+                    data: postdata,
+                    resultfn: result_fn,
+                    errorfn: error_fn,
+                    initfn: init_fn,
+                    id: cmd_id,
+                };
+                http_cmd_list.push(cmd);
+                process_cmd();
+            }
+            function SendFileHttp(
+                url,
+                postdata,
+                progress_fn,
+                result_fn,
+                error_fn
+            ) {
+                if (http_cmd_list.length > max_cmd && max_cmd != -1) {
+                    //console.log("adding rejected");
+                    error_fn();
+                    return;
+                }
+                if (http_cmd_list.length != 0) process = false;
+                var cmd = {
+                    cmd: url,
+                    type: "POST",
+                    isupload: true,
+                    data: postdata,
+                    progressfn: progress_fn,
+                    resultfn: result_fn,
+                    errorfn: error_fn,
+                    id: 0,
+                };
+                http_cmd_list.push(cmd);
+                process_cmd();
+            }
+
+            function CancelCurrentUpload() {
+                xmlhttpupload.abort();
+                //http_communication_locked = false;
+                console.log("Cancel Upload");
+            }
+
+            function ProcessFileHttp(
+                url,
+                postdata,
+                progressfn,
+                resultfn,
+                errorfn
+            ) {
+                if (http_communication_locked) {
+                    errorfn(503, translate_text_item("Communication locked!"));
+                    return;
+                }
+                http_communication_locked = true;
+                xmlhttpupload = new XMLHttpRequest();
+                xmlhttpupload.onreadystatechange = function () {
+                    if (xmlhttpupload.readyState == 4) {
+                        http_communication_locked = false;
+                        if (xmlhttpupload.status == 200) {
+                            if (
+                                typeof resultfn != "undefined" &&
+                                resultfn != null
+                            )
+                                resultfn(xmlhttpupload.responseText);
+                        } else {
+                            if (xmlhttpupload.status == 401)
+                                GetIdentificationStatus();
+                            if (
+                                typeof errorfn != "undefined" &&
+                                errorfn != null
+                            )
+                                errorfn(
+                                    xmlhttpupload.status,
+                                    xmlhttpupload.responseText
+                                );
+                        }
+                    }
+                };
+                //console.log(url);
+                xmlhttpupload.open("POST", url, true);
+                if (typeof progressfn != "undefined" && progressfn != null)
+                    xmlhttpupload.upload.addEventListener(
+                        "progress",
+                        progressfn,
+                        false
+                    );
+                xmlhttpupload.send(postdata);
+            }
+            var language = "en";
+
+            var language_list = [
+                //removeIf(de_lang_disabled)
+                ["de", "Deutsch", "germantrans"],
+                //endRemoveIf(de_lang_disabled)
+                //removeIf(en_lang_disabled)
+                ["en", "English", "englishtrans"],
+                //endRemoveIf(en_lang_disabled)
+                //removeIf(es_lang_disabled)
+                ["es", "Espa&ntilde;ol", "spanishtrans"],
+                //endRemoveIf(es_lang_disabled)
+                //removeIf(fr_lang_disabled)
+                ["fr", "Fran&ccedil;ais", "frenchtrans"],
+                //endRemoveIf(fr_lang_disabled)
+                //removeIf(it_lang_disabled)
+                ["it", "Italiano", "italiantrans"],
+                //endRemoveIf(it_lang_disabled)
+                //removeIf(ja_lang_disabled)
+                ["ja", "&#26085;&#26412;&#35486;", "japanesetrans"],
+                //endRemoveIf(ja_lang_disabled)
+                //removeIf(hu_lang_disabled)
+                ["hu", "Magyar", "hungariantrans"],
+                //endRemoveIf(hu_lang_disabled)
+                //removeIf(pl_lang_disabled)
+                ["pl", "Polski", "polishtrans"],
+                //endRemoveIf(pl_lang_disabled)
+                //removeIf(ptbr_lang_disabled)
+                ["ptbr", "Português-Br", "ptbrtrans"],
+                //endRemoveIf(ptbr_lang_disabled)
+                //removeIf(ru_lang_disabled)
+                ["ru", "Русский", "russiantrans"],
+                //endRemoveIf(ru_lang_disabled)
+                //removeIf(tr_lang_disabled)
+                ["tr", "T&uuml;rk&ccedil;e", "turkishtrans"],
+                //endRemoveIf(tr_lang_disabled)
+                //removeIf(uk_lang_disabled)
+                ["uk", "Українська", "ukrtrans"],
+                //endRemoveIf(uk_lang_disabled)
+                //removeIf(zh_cn_lang_disabled)
+                ["zh_CN", "&#31616;&#20307;&#20013;&#25991;", "zh_CN_trans"],
+                //endRemoveIf(zh_cn_lang_disabled)
+                //removeIf(zh_tw_lang_disabled)
+                ["zh_TW", "&#32321;&#39636;&#20013;&#25991;;", "zh_TW_trans"],
+                //endRemoveIf(zh_tw_lang_disabled)
+            ];
+
+            //removeIf(production)
+            var translated_list = [];
+            //endRemoveIf(production)
+
+            function build_language_list(id_item) {
+                var content =
+                    "<select class='form-control'  id='" +
+                    id_item +
+                    "' onchange='translate_text(this.value)'>\n";
+                for (var lang_i = 0; lang_i < language_list.length; lang_i++) {
+                    content +=
+                        "<option value='" + language_list[lang_i][0] + "'";
+                    if (language_list[lang_i][0] == language)
+                        content += " selected";
+                    content += ">" + language_list[lang_i][1] + "</option>\n";
+                }
+                content += "</select>\n";
+                return content;
+            }
+
+            function translate_text(lang) {
+                var currenttrans = {};
+                var translated_content = "";
+                language = lang;
+                for (var lang_i = 0; lang_i < language_list.length; lang_i++) {
+                    if (language_list[lang_i][0] == lang) {
+                        currenttrans = eval(language_list[lang_i][2]);
+                    }
+                }
+                var All = document.getElementsByTagName("*");
+                for (var i = 0; i < All.length; i++) {
+                    if (All[i].hasAttribute("translate")) {
+                        var content = "";
+                        if (!All[i].hasAttribute("english_content")) {
+                            content = All[i].innerHTML;
+                            content.trim();
+                            All[i].setAttribute("english_content", content);
+                            //removeIf(production)
+                            var item = {
+                                content: content,
+                            };
+                            translated_list.push(item);
+                            //endRemoveIf(production)
+                        }
+                        content = All[i].getAttribute("english_content");
+                        translated_content = translate_text_item(content);
+
+                        All[i].innerHTML = translated_content;
+                    }
+                    //add support for placeholder attribut
+                    if (
+                        All[i].hasAttribute("translateph") &&
+                        All[i].hasAttribute("placeholder")
+                    ) {
+                        var content = "";
+                        if (!All[i].hasAttribute("english_content")) {
+                            content = All[i].getAttribute("placeholder");
+                            content.trim();
+                            //removeIf(production)
+                            var item = {
+                                content: content,
+                            };
+                            translated_list.push(item);
+                            //endRemoveIf(production)
+                            All[i].setAttribute("english_content", content);
+                        }
+                        content = All[i].getAttribute("english_content");
+
+                        translated_content = decode_entitie(
+                            translate_text_item(content)
+                        );
+                        All[i].setAttribute("placeholder", translated_content);
+                    }
+                }
+            }
+
+            function translate_text_item(item_text, withtag) {
+                var currenttrans = {};
+                var translated_content;
+                var with_tag = false;
+                if (typeof withtag != "undefined") with_tag = withtag;
+                for (var lang_i = 0; lang_i < language_list.length; lang_i++) {
+                    if (language_list[lang_i][0] == language) {
+                        currenttrans = eval(language_list[lang_i][2]);
+                    }
+                }
+                translated_content = currenttrans[item_text];
+                if (typeof translated_content === "undefined")
+                    translated_content = item_text;
+                if (with_tag) {
+                    var translated_content_tmp =
+                        '<span english_content="' +
+                        item_text +
+                        '" translate>' +
+                        translated_content +
+                        "</span>";
+                    translated_content = translated_content_tmp;
+                }
+                return translated_content;
+            }
+        </script>
+    </head>
+
+    <body>
+        <h1>WT</h1>
+        <p>WT</p>
+        <div>
+            <form autocomplete="off" onsubmit="return false;">
+                <input
+                    autocomplete="off"
+                    type="text"
+                    value=""
+                    id="custom_cmd_txt"
+                    placeholder="Send Command..."
+                />
+            </form>
+        </div>
+        <button onclick="SendCustomCommand();">TEST</button>
+    </body>
+</html>
