@@ -2,7 +2,7 @@ var http_communication_locked = false;
 var http_cmd_list = [];
 var processing_cmd = false;
 var xmlhttpupload;
-
+var headon = "http://grblesp.local"
 var max_cmd = 20;
 
 function clear_cmd_list() {
@@ -108,7 +108,7 @@ function SendGetHttp(url, result_fn, error_fn, id, max_id) {
     } //else console.log("No ID defined");	
     //console.log("adding " + url);
     var cmd = {
-        cmd: url,
+        cmd: headon+url,
         type: "GET",
         isupload: false,
         resultfn: result_fn,
@@ -140,7 +140,7 @@ function ProcessGetHttp(url, resultfn, errorfn) {
     }
     if (url.indexOf("?") != -1) url += "&PAGEID=" + page_id;
     //console.log("GET:" + url);
-    xmlhttp.open("GET", url, true);
+    xmlhttp.open("GET", headon+url, true);
     xmlhttp.send();
 }
 
@@ -163,7 +163,7 @@ function SendPostHttp(url, postdata, result_fn, error_fn, id, max_id) {
 
     //console.log("adding " + url);
     var cmd = {
-        cmd: url,
+        cmd: headon+url,
         type: "POST",
         isupload: false,
         data: postdata,
@@ -193,7 +193,7 @@ function ProcessPostHttp(url, postdata, resultfn, errorfn) {
         }
     }
     //console.log(url);
-    xmlhttp.open("POST", url, true);
+    xmlhttp.open("POST", headon+url, true);
     xmlhttp.send(postdata);
 }
 
@@ -205,7 +205,7 @@ function SendFileHttp(url, postdata, progress_fn, result_fn, error_fn) {
     }
     if (http_cmd_list.length != 0) process = false;
     var cmd = {
-        cmd: url,
+        cmd: headon+url,
         type: "POST",
         isupload: true,
         data: postdata,
@@ -243,7 +243,7 @@ function ProcessFileHttp(url, postdata, progressfn, resultfn, errorfn) {
         }
     }
     //console.log(url);
-    xmlhttpupload.open("POST", url, true);
+    xmlhttpupload.open("POST", headon+url, true);
     if (typeof progressfn != 'undefined' && progressfn != null) xmlhttpupload.upload.addEventListener("progress", progressfn, false);
     xmlhttpupload.send(postdata);
 }
